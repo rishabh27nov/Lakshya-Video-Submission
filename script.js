@@ -78,31 +78,76 @@ function setProgress(pct, label) {
   progressLabel.textContent = label;
 }
 
-/* ---------- Upload via our own edge function (same-origin: no CORS, no popup) ---------- */
-async function uploadToDrive(file, metadataText, onProgress) {
-  return new Promise((resolve, reject) => {
-    const xhr = new XMLHttpRequest();
-    xhr.open("POST", "/api/upload");
-    xhr.setRequestHeader("X-File-Name", encodeURIComponent(file.name));
-    xhr.setRequestHeader("X-File-Type", file.type || "video/mp4");
-    xhr.setRequestHeader("X-File-Metadata", encodeURIComponent(metadataText));
+/* ---------- Chunked upload via our own server (no CORS, no popup, no size limit) ---------- */
+function arrayBufferToBase64(buffer) {
+  let binary = "";
+  const bytes = new Uint8Array(buffer);
+  const chunkSize = 0x8000;
+  for (let i = 0; i < bytes.length; i += chunkSize) {
+    binary += String.fromCharCode.apply(null, bytes.subarray(i, i + chunkSize));
+  }
+  return btoa(binary);
+}
 
-    xhr.upload.onprogress = (e) => {
-      if (e.lengthComputable) {
-        const pct = Math.round((e.loaded / e.total) * 100);
-        onProgress(pct);
-      }
-    };
-    xhr.onload = () => {
-      if (xhr.status >= 200 && xhr.status < 300) {
-        resolve(JSON.parse(xhr.responseText));
-      } else {
-        reject(new Error("Upload failed: " + xhr.status + " " + xhr.responseText));
-      }
-    };
-    xhr.onerror = () => reject(new Error("Network error during upload"));
-    xhr.send(file);
+async function uploadToDrive(file, metadataText, onProgress) {
+  // Step 1: start a resumable session (tiny request)
+  const initRes = await fetch("/api/init-upload", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      fileName: file.name,
+      mimeType: file.type || "video/mp4",
+      metadata: metadataText
+    })
   });
+  if (!initRes.ok) {
+    const t = await initRes.text();
+    throw new Error("Could not start upload: " + t);
+  }
+  const { sessionUrl } = await initRes.json();
+  if (!sessionUrl) throw new Error("No session URL returned from server");
+
+  const CHUNK_SIZE = 2.5 * 1024 * 1024; // 2.5MB raw chunks (safely under Vercel's limit once base64-encoded)
+  const total = file.size;
+  let uploaded = 0;
+  let finalResult = null;
+
+  while (uploaded < total) {
+    const end = Math.min(uploaded + CHUNK_SIZE, total);
+    const chunk = file.slice(uploaded, end);
+    const arrayBuffer = await chunk.arrayBuffer();
+    const base64 = arrayBufferToBase64(arrayBuffer);
+    const contentRange = `bytes ${uploaded}-${end - 1}/${total}`;
+
+    const chunkRes = await fetch("/api/upload-chunk", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        sessionUrl,
+        contentRange,
+        mimeType: file.type || "video/mp4",
+        chunkBase64: base64
+      })
+    });
+
+    if (chunkRes.status === 308) {
+      uploaded = end;
+      onProgress(Math.round((uploaded / total) * 100));
+      continue;
+    }
+
+    if (chunkRes.status === 200 || chunkRes.status === 201) {
+      finalResult = await chunkRes.json();
+      uploaded = end;
+      onProgress(100);
+      break;
+    }
+
+    const errText = await chunkRes.text();
+    throw new Error("Chunk upload failed: " + chunkRes.status + " " + errText);
+  }
+
+  return finalResult || {};
 }
 
 /* ---------- Form submit ---------- */
