@@ -169,7 +169,7 @@ document.getElementById("videoForm").addEventListener("submit", async (e) => {
     document.querySelectorAll(".toggle-btn.active").forEach(b => b.classList.remove("active"));
   } catch (err) {
     console.error(err);
-    showStatus("There was a problem with the upload. Please try again or contact the admin.", false);
+    showStatus("Upload problem: " + err.message, false);
   } finally {
     submitBtn.disabled = false;
     submitBtn.textContent = "Upload Video";
