@@ -78,49 +78,14 @@ function setProgress(pct, label) {
   progressLabel.textContent = label;
 }
 
-/* ---------- Upload via backend token, direct to Google (no login popup, no CORS issue) ---------- */
+/* ---------- Upload via our own edge function (same-origin: no CORS, no popup) ---------- */
 async function uploadToDrive(file, metadataText, onProgress) {
-  // Step 1: get a short-lived access token from our server (service account, no login popup)
-  const tokenRes = await fetch("/api/get-upload-token");
-  if (!tokenRes.ok) {
-    const t = await tokenRes.text();
-    throw new Error("Could not get upload token: " + t);
-  }
-  const { accessToken, folderId } = await tokenRes.json();
-
-  // Step 2: start a resumable upload session directly with Google (browser talks to Google itself)
-  const initRes = await fetch(
-    "https://www.googleapis.com/upload/drive/v3/files?uploadType=resumable&fields=id,name,webViewLink",
-    {
-      method: "POST",
-      headers: {
-        "Authorization": "Bearer " + accessToken,
-        "Content-Type": "application/json; charset=UTF-8",
-        "X-Upload-Content-Type": file.type || "video/mp4"
-      },
-      body: JSON.stringify({
-        name: file.name,
-        parents: [folderId],
-        description: metadataText
-      })
-    }
-  );
-
-  if (!initRes.ok) {
-    const t = await initRes.text();
-    throw new Error("Could not start upload session: " + initRes.status + " " + t);
-  }
-
-  const uploadUrl = initRes.headers.get("location");
-  if (!uploadUrl) {
-    throw new Error("Upload session did not return a location URL");
-  }
-
-  // Step 3: upload the file bytes directly to that session (with progress)
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
-    xhr.open("PUT", uploadUrl);
-    xhr.setRequestHeader("Content-Type", file.type || "video/mp4");
+    xhr.open("POST", "/api/upload");
+    xhr.setRequestHeader("X-File-Name", encodeURIComponent(file.name));
+    xhr.setRequestHeader("X-File-Type", file.type || "video/mp4");
+    xhr.setRequestHeader("X-File-Metadata", encodeURIComponent(metadataText));
 
     xhr.upload.onprogress = (e) => {
       if (e.lengthComputable) {
