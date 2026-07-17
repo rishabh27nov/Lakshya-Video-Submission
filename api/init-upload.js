@@ -1,5 +1,3 @@
-const { google } = require('googleapis');
-
 module.exports = async (req, res) => {
   if (req.method !== 'POST') {
     res.status(405).json({ error: 'Method not allowed' });
@@ -9,14 +7,28 @@ module.exports = async (req, res) => {
   try {
     const { fileName, mimeType, metadata } = req.body;
 
-    const auth = new google.auth.JWT(
-      process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL,
-      null,
-      (process.env.GOOGLE_PRIVATE_KEY || '').replace(/\\n/g, '\n'),
-      ['https://www.googleapis.com/auth/drive.file']
-    );
-    await auth.authorize();
-    const accessToken = auth.credentials.access_token;
+    // Get a fresh access token using the stored refresh token (real Google account, has storage)
+    const tokenParams = new URLSearchParams({
+      client_id: process.env.GOOGLE_CLIENT_ID,
+      client_secret: process.env.GOOGLE_CLIENT_SECRET,
+      refresh_token: process.env.GOOGLE_REFRESH_TOKEN,
+      grant_type: 'refresh_token'
+    });
+
+    const tokenRes = await fetch('https://oauth2.googleapis.com/token', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: tokenParams
+    });
+
+    if (!tokenRes.ok) {
+      const t = await tokenRes.text();
+      res.status(500).json({ error: 'Token refresh failed', details: t });
+      return;
+    }
+
+    const tokenData = await tokenRes.json();
+    const accessToken = tokenData.access_token;
 
     const initRes = await fetch(
       'https://www.googleapis.com/upload/drive/v3/files?uploadType=resumable&fields=id,name,webViewLink',
