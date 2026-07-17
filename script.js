@@ -78,26 +78,45 @@ function setProgress(pct, label) {
   progressLabel.textContent = label;
 }
 
-/* ---------- Upload via backend (no login popup) ---------- */
+/* ---------- Upload via backend token, direct to Google (no login popup, no CORS issue) ---------- */
 async function uploadToDrive(file, metadataText, onProgress) {
-  // Step 1: ask our server to start a Drive upload session (uses a service account)
-  const initRes = await fetch("/api/start-upload", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      fileName: file.name,
-      mimeType: file.type || "video/mp4",
-      metadata: metadataText
-    })
-  });
+  // Step 1: get a short-lived access token from our server (service account, no login popup)
+  const tokenRes = await fetch("/api/get-upload-token");
+  if (!tokenRes.ok) {
+    const t = await tokenRes.text();
+    throw new Error("Could not get upload token: " + t);
+  }
+  const { accessToken, folderId } = await tokenRes.json();
+
+  // Step 2: start a resumable upload session directly with Google (browser talks to Google itself)
+  const initRes = await fetch(
+    "https://www.googleapis.com/upload/drive/v3/files?uploadType=resumable&fields=id,name,webViewLink",
+    {
+      method: "POST",
+      headers: {
+        "Authorization": "Bearer " + accessToken,
+        "Content-Type": "application/json; charset=UTF-8",
+        "X-Upload-Content-Type": file.type || "video/mp4"
+      },
+      body: JSON.stringify({
+        name: file.name,
+        parents: [folderId],
+        description: metadataText
+      })
+    }
+  );
 
   if (!initRes.ok) {
-    const errText = await initRes.text();
-    throw new Error("Could not start upload: " + errText);
+    const t = await initRes.text();
+    throw new Error("Could not start upload session: " + initRes.status + " " + t);
   }
-  const { uploadUrl } = await initRes.json();
 
-  // Step 2: upload the file bytes directly to that session (no Google login needed)
+  const uploadUrl = initRes.headers.get("location");
+  if (!uploadUrl) {
+    throw new Error("Upload session did not return a location URL");
+  }
+
+  // Step 3: upload the file bytes directly to that session (with progress)
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
     xhr.open("PUT", uploadUrl);
