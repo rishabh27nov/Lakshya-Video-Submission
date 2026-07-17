@@ -1,8 +1,5 @@
 {
   "name": "lakshya-video-submission",
   "version": "1.0.0",
-  "private": true,
-  "dependencies": {
-    "googleapis": "^126.0.1"
-  }
+  "private": true
 }
